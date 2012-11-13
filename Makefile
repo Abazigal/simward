@@ -28,7 +28,7 @@ install: simward
 clean:
 	@echo "cleaning up"
 	@rm -f simward
-	@rm -f *.o
+	@rm -f $(SRC_DIR)/*.o
 
 uninstall:
 	@echo "uninstalling"
