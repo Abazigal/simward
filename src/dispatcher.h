@@ -1,9 +1,20 @@
 #ifndef DISPATCHER_H
 #define DISPATCHER_H
 
-#define P_IDX_C(x) ((x+1)*2)
-#define P_IDX_R(x) ((x+1)*2+1)
-#define F_IDX(x) ((x/2)-1)
+#include <netinet/in.h>
+#include <poll.h>
+#include "forward.h"
 
+typedef struct {
+    forward **flist;
+    struct pollfd *plist;
+
+    struct sockaddr_in *raddr;
+
+    int nbconnection;
+    int maxconnection;
+} tracking_infos;
+
+void handle_user_command(int *again, tracking_infos * infos);
 int dispatcher(int lsock, struct sockaddr_in *dest, int type, int max);
 #endif

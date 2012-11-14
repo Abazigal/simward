@@ -25,12 +25,27 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <netinet/in.h>
-
 #include "forward.h"
 
 
-static forward *new_forward(int rsock)
+static void free_forward(forward * f)
+{
+    free(f->caddr);
+    free(f->buffer);
+    free(f);
+}
+
+void free_tcp_forward(forward * f)
+{
+    free_forward(f);
+}
+
+void free_udp_forward(forward * f)
+{
+    free_forward(f);
+}
+
+static forward *new_forward(int rsock, struct sockaddr_in *caddr)
 {
     forward *f = (forward *) malloc(sizeof(forward));
     if (f == NULL) {
@@ -38,42 +53,45 @@ static forward *new_forward(int rsock)
 	return NULL;
     }
 
+    f->buffer = (char *) malloc(BUFFER_SIZE);
+    if (f->buffer == NULL) {
+	perror("malloc");
+	free(f);
+	return NULL;
+    }
+
+    f->caddr = (struct sockaddr_in *)
+	malloc(sizeof(struct sockaddr_in));
+    if (f->caddr == NULL) {
+	perror("malloc");
+	free(f->buffer);
+	free(f);
+	return NULL;
+    }
+
+    memcpy(f->caddr, caddr, sizeof(struct sockaddr_in));
+
+
+    f->bufflen = 0;
+    f->csock = -1;
     f->rsock = rsock;
     f->status = WAIT_READ_BOTH;
     return f;
 }
 
-static void free_forward(forward * f)
-{
-    free(f);
-}
 
-
-forward *new_tcp_forward(int csock, int rsock)
+forward *new_tcp_forward(int csock, struct sockaddr_in * caddr, int rsock)
 {
-    forward *f = new_forward(rsock);
+    forward *f = new_forward(rsock, caddr);
     if (f == NULL)
 	return NULL;
 
-    f->client.csock = csock;
+    f->csock = csock;
     return f;
 }
 
 
 forward *new_udp_forward(struct sockaddr_in * caddr, int rsock)
 {
-    forward *f = new_forward(rsock);
-    if (f == NULL)
-	return NULL;
-
-    f->client.caddr = (struct sockaddr_in *)
-	malloc(sizeof(struct sockaddr_in));
-    if (f->client.caddr == NULL) {
-	perror("malloc");
-	free_forward(f);
-	return NULL;
-    }
-
-    memcpy(f->client.caddr, caddr, sizeof(struct sockaddr_in));
-    return f;
+    return new_forward(rsock, caddr);
 }

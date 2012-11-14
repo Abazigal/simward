@@ -79,6 +79,8 @@ int main(int argc, char **argv)
 	}
     }
 
+    printf("> ");
+    fflush(stdout);
     dispatcher(lsock, &raddr,
 	       (params.various & tFLAG) ? SOCK_STREAM : SOCK_DGRAM,
 	       params.max);

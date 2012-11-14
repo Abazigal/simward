@@ -23,161 +23,123 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <string.h>
 
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <poll.h>
+#include <arpa/inet.h>
+
+
+#define IN_DISPATCHER_C
 
 #include "dispatcher.h"
-#include "forward.h"
+#include "dispatcher_tcp.h"
+#include "dispatcher_udp.h"
 
-
-static void rearrange(forward ** flist, struct pollfd *plist)
+void handle_user_command(int *again, tracking_infos * infos)
 {
-    return;
-}
+    char cmd[10];
+    int i;
+    fgets(cmd, 10, stdin);
 
-static int dispatch_tcp_loop(int lsock, struct sockaddr_in *dest,
-			     int max, forward ** flist,
-			     struct pollfd *plist)
-{
-    int nbconnection = 0, plist_size = max * 2 + 1, again = 1;
-    int i, tmp, csock, rsock, events;
-    struct sockaddr_in caddr;
+    if (strncasecmp(cmd, "list", 4) == 0) {
+	printf("Active forwards (%d/%d max):\n",
+	       infos->nbconnection, infos->maxconnection);
 
+	for (i = 0; i < infos->maxconnection; ++i) {
+	    if (infos->flist[i] != NULL) {
+		printf("\t%s:%hu <-> ",
+		       inet_ntoa(infos->flist[i]->caddr->sin_addr),
+		       ntohs(infos->flist[i]->caddr->sin_port));
+		printf("%s:%hu ",
+		       inet_ntoa(infos->raddr->sin_addr),
+		       ntohs(infos->raddr->sin_port));
 
-    while (again) {
-	events = poll(plist, plist_size, -1);
-	for (i = 0; i < plist_size && events > 0; ++i) {
-	    if (plist[i].revents == 0)
-		continue;
-
-	    --events;
-
-	    if (i == 0 && (plist[i].revents & POLLIN)) {
-		/* New user command */
-
-	    } else if (i == 1) {
-		/* New client for us */
-
-		/* Establish connection with client */
-		tmp = sizeof(caddr);
-		csock =
-		    accept(lsock, (struct sockaddr *) &caddr,
-			   (socklen_t *) & tmp);
-		if (csock == -1) {
-		    perror("accept");
-		    continue;
+		switch (infos->flist[i]->status) {
+		case WAIT_WRITE_C:
+		    printf("(<-DATA)");
+		    break;
+		case WAIT_WRITE_R:
+		    printf("(DATA->)");
+		    break;
+		default:
+		    printf("(->DATA<-)");
 		}
-
-		/* Check connection limit */
-		if (nbconnection >= max) {
-		    fprintf(stderr,
-			    "Can't accept more connection; closing new one ...\n");
-		    close(csock);
-		    continue;
-		}
-
-		/* Connect to remote host */
-		rsock = socket(AF_INET, SOCK_STREAM, 0);
-		if (rsock == -1) {
-		    perror("socket");
-		    close(csock);
-		    continue;
-		}
-
-		if (connect
-		    (rsock, (const struct sockaddr *) dest,
-		     sizeof(struct sockaddr_in)) == -1) {
-		    perror("connect");
-		    close(csock);
-		    continue;
-		}
-
-
-		/* Register forward */
-		flist[nbconnection] = new_tcp_forward(csock, rsock);
-		if (flist[nbconnection] == NULL) {
-		    close(rsock);
-		    close(csock);
-		    continue;
-		}
-
-		plist[P_IDX_C(nbconnection)].fd = csock;
-		plist[P_IDX_R(nbconnection)].fd = rsock;
-
-
-		++nbconnection;
-	    } else {
+		printf("\n");
 	    }
 	}
-
-	/* Check flist */
-	if (nbconnection < max && flist[nbconnection] != NULL)
-	    rearrange(flist, plist);
-
+	printf("\n> ");
+	fflush(stdout);
+    } else if (strncasecmp(cmd, "quit", 4) == 0
+	       || strncasecmp(cmd, "exit", 4) == 0) {
+	printf("Closing ...\n");
+	*again = 0;
+    } else {
+	printf("Unknown command\n");
+	printf("\n> ");
+	fflush(stdout);
     }
 
-    return 1;
-}
-
-static int dispatch_udp_loop(int lsock, struct sockaddr_in *dest,
-			     int max, forward ** flist,
-			     struct pollfd *plist)
-{
-    return 1;
 }
 
 int dispatcher(int lsock, struct sockaddr_in *dest, int type, int max)
 {
     int ret, plist_size;
+    tracking_infos infos;
+
+    /* Some init stuff */
+    infos.nbconnection = 0;
+    infos.maxconnection = max;
+    infos.raddr = dest;
 
     /* Forward list */
-    forward **flist = (forward **) malloc(sizeof(forward *) * max);
-    if (flist == NULL) {
+    infos.flist = (forward **) malloc(sizeof(forward *) * max);
+    if (infos.flist == NULL) {
 	perror("malloc");
 	return 0;
     }
     for (ret = 0; ret < max; ++ret) {
-	flist[ret] = NULL;
+	infos.flist[ret] = NULL;
     }
+
 
     /* Polld list */
     if (type == SOCK_STREAM)
-	plist_size = max * 2 + 1;
+	plist_size = max * 2 + 2;
     else
-	plist_size = max + 1;
+	plist_size = max + 2;
 
-    struct pollfd *plist =
+    infos.plist =
 	(struct pollfd *) malloc(plist_size * sizeof(struct pollfd));
 
-    if (plist == NULL) {
+    if (infos.plist == NULL) {
 	perror("malloc");
 	return 0;
     }
 
     for (ret = 0; ret < plist_size; ++ret) {
-	plist[ret].fd = -1;
+	infos.plist[ret].fd = -1;
     }
 
+
     /* Watch for user command */
-    plist[0].fd = STDIN_FILENO;
-    plist[0].events = POLLIN;
+    infos.plist[0].fd = STDIN_FILENO;
+    infos.plist[0].events = POLLIN;
 
     /* Watch for new client */
-    plist[1].fd = lsock;
-    plist[1].events = POLLIN;
+    infos.plist[1].fd = lsock;
+    infos.plist[1].events = POLLIN;
 
 
     /* Main dispatcher loop */
     if (type == SOCK_STREAM)
-	ret = dispatch_tcp_loop(lsock, dest, max, flist, plist);
+	ret = dispatch_tcp_loop(lsock, &infos);
     else
-	ret = dispatch_udp_loop(lsock, dest, max, flist, plist);
+	ret = dispatch_udp_loop(lsock, &infos);
 
 
+    /* Cleaning memory */
+    free(infos.plist);
+    free(infos.flist);
 
-    free(plist);
-    free(flist);
     return ret;
 }
