@@ -24,28 +24,31 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "forward.h"
 
-
-static void free_forward(forward * f)
+/*
+ * Function: free_forward
+ *
+ * Clean all the allocated memory space 
+ * concerning the given forward.
+ */
+void free_forward(forward * f)
 {
     free(f->caddr);
     free(f->buffer);
     free(f);
 }
 
-void free_tcp_forward(forward * f)
-{
-    free_forward(f);
-}
 
-void free_udp_forward(forward * f)
-{
-    free_forward(f);
-}
-
-static forward *new_forward(int rsock, struct sockaddr_in *caddr)
+/*
+ * Function: new_forward
+ *
+ * Allocate a new forward 'object' and fill it with
+ * the given informations.
+ */
+forward *new_forward(int csock, struct sockaddr_in *caddr, int rsock)
 {
     forward *f = (forward *) malloc(sizeof(forward));
     if (f == NULL) {
@@ -73,25 +76,10 @@ static forward *new_forward(int rsock, struct sockaddr_in *caddr)
 
 
     f->bufflen = 0;
-    f->csock = -1;
+    f->totalbytes = 0;
+    f->lastactivity = (long) time(NULL);
+    f->csock = csock;
     f->rsock = rsock;
     f->status = WAIT_READ_BOTH;
     return f;
-}
-
-
-forward *new_tcp_forward(int csock, struct sockaddr_in * caddr, int rsock)
-{
-    forward *f = new_forward(rsock, caddr);
-    if (f == NULL)
-	return NULL;
-
-    f->csock = csock;
-    return f;
-}
-
-
-forward *new_udp_forward(struct sockaddr_in * caddr, int rsock)
-{
-    return new_forward(rsock, caddr);
 }

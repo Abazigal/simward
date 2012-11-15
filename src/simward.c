@@ -36,12 +36,14 @@
 
 int main(int argc, char **argv)
 {
+    /* Treat command line */
     parameters params;
     memset(&params, 0, sizeof(parameters));
     if (!parse_cmdline(argc, argv, &params))
 	return EXIT_FAILURE;
 
 
+    /* Create the sockaddr of the remote host */
     struct sockaddr_in raddr;
     struct hostent *hresolved;
     memset(&raddr, 0, sizeof(struct sockaddr_in));
@@ -54,6 +56,7 @@ int main(int argc, char **argv)
     memcpy(&(raddr.sin_addr), hresolved->h_addr, sizeof(char *));
 
 
+    /* Create our listening socket, on which clients will connect */
     int lsock;
     lsock = socket(AF_INET,
 		   (params.various & tFLAG) ? SOCK_STREAM : SOCK_DGRAM, 0);
@@ -62,6 +65,7 @@ int main(int argc, char **argv)
 	return EXIT_FAILURE;
     }
 
+    /* Bind it to the given local port and listen for incoming connections */
     struct sockaddr_in laddr;
     memset(&laddr, 0, sizeof(struct sockaddr_in));
     laddr.sin_family = AF_INET;
@@ -79,11 +83,16 @@ int main(int argc, char **argv)
 	}
     }
 
+
+    /* Display prompt */
     printf("> ");
     fflush(stdout);
+
+    /* Do the stuff ... */
     dispatcher(lsock, &raddr,
 	       (params.various & tFLAG) ? SOCK_STREAM : SOCK_DGRAM,
 	       params.max);
+
 
     close(lsock);
     return EXIT_SUCCESS;
@@ -94,7 +103,7 @@ int main(int argc, char **argv)
  * Function: parse_cmdline
  *
  * Parses arguments on the command line, checks coherency,
- * and fills the 'arguments' structure.
+ * and fills the 'parameters' structure.
  */
 int parse_cmdline(int argc, char **argv, parameters * params)
 {

@@ -9,19 +9,19 @@
 #define WAIT_WRITE_R 3
 
 typedef struct {
-    int csock;			/* Only used in TCP mode */
+    int csock;
     struct sockaddr_in *caddr;
     int rsock;
 
     char status;
+    int lastactivity;
+    unsigned long long totalbytes;
 
     char *buffer;
     int bufflen;
 } forward;
 
 
-void free_tcp_forward(forward * f);
-void free_udp_forward(forward * f);
-forward *new_tcp_forward(int csock, struct sockaddr_in *caddr, int rsock);
-forward *new_udp_forward(struct sockaddr_in *caddr, int rsock);
+void free_forward(forward * f);
+forward *new_forward(int csock, struct sockaddr_in *caddr, int rsock);
 #endif

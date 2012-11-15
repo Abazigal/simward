@@ -20,10 +20,12 @@
  * Copyright 2012 Sylvain Rodon
  *
  */
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 
 #include <sys/socket.h>
 
@@ -31,29 +33,15 @@
 #include "dispatcher_tcp.h"
 
 
-static void rearrange_tcp_forward_list(tracking_infos * infos)
-{
-    int start, end = F_IDX(infos->maxconnection - 1);
-    for (start = 0; start < end; ++start) {
-	if (infos->flist[start] != NULL)
-	    continue;
-
-	for (; end > start && infos->flist[end] == NULL; --end);
-	if (infos->flist[end] != NULL) {
-	    infos->flist[start] = infos->flist[end];
-	    infos->flist[end] = NULL;
-
-	    memcpy((void *) (infos->plist) + P_IDX_C(start),
-		   (void *) (infos->plist) + P_IDX_C(end),
-		   sizeof(struct pollfd) * 2);
-
-	    infos->plist[P_IDX_C(end)].fd = -1;
-	    infos->plist[P_IDX_R(end)].fd = -1;
-	}
-    }
-}
-
-
+/*
+ * Function: handle_new_tcp_client
+ *
+ * This function is called when data are readable on the listening socket,
+ * which means that a new client is attempting to connect.
+ * This functions "registers" that client by adding a new Forward object
+ * to the list of managed forwards.
+ *
+ */
 static void handle_new_tcp_client(int lsock, tracking_infos * infos)
 {
     int tmp, csock, rsock;
@@ -91,15 +79,15 @@ static void handle_new_tcp_client(int lsock, tracking_infos * infos)
     }
 
 
-    /* Register forward */
-    infos->flist[infos->nbconnection] =
-	new_tcp_forward(csock, &caddr, rsock);
+    /* Register a new forward */
+    infos->flist[infos->nbconnection] = new_forward(csock, &caddr, rsock);
     if (infos->flist[infos->nbconnection] == NULL) {
 	close(rsock);
 	close(csock);
 	return;
     }
 
+    /* At the beginning, we are waiting for data from both part */
     infos->plist[P_IDX_C(infos->nbconnection)].fd = csock;
     infos->plist[P_IDX_C(infos->nbconnection)].events = POLLIN;
     infos->plist[P_IDX_R(infos->nbconnection)].fd = rsock;
@@ -110,17 +98,24 @@ static void handle_new_tcp_client(int lsock, tracking_infos * infos)
 }
 
 
-static void handle_tcp_disconnect(int plidx, tracking_infos * infos)
+/*
+ * Function: handle_tcp_disconnect
+ *
+ * This function is called when a part (client or remote) has 
+ * closed its socket (connection is over). 
+ * We close the other connection by closing the other socket, then we
+ * clean memory space and forward list associated with this forward.
+ * User command "Kill" also rely on this function.
+ *
+ */
+void handle_tcp_disconnect(int plidx, tracking_infos * infos)
 {
     forward *ftmp = infos->flist[F_IDX(plidx)];
 
-    if (ftmp->rsock == infos->plist[plidx].fd) {
-	close(ftmp->csock);
-    } else {
-	close(ftmp->rsock);
-    }
+    close(ftmp->csock);
+    close(ftmp->rsock);
 
-    free_tcp_forward(ftmp);
+    free_forward(ftmp);
     infos->flist[F_IDX(plidx)] = NULL;
 
     infos->plist[P_IDX_C(F_IDX(plidx))].fd = -1;
@@ -130,26 +125,45 @@ static void handle_tcp_disconnect(int plidx, tracking_infos * infos)
 }
 
 
+/*
+ * Function: handle_tcp_read_data
+ *
+ * This function is called when a part (client or remote) has sent data.
+ * We read those data into the forward buffer, and tells that it must
+ * be sent through the other part' socket.
+ *
+ */
 static void handle_tcp_read_data(int plidx, tracking_infos * infos)
 {
     forward *ftmp = infos->flist[F_IDX(plidx)];
+
+    /* If we are not supposed to read, we don't */
+    if (ftmp->status != WAIT_READ_BOTH)
+	return;
+
     ftmp->bufflen =
 	read(infos->plist[plidx].fd, ftmp->buffer, BUFFER_SIZE);
 
+    /* Checks error or closed connection */
     if (ftmp->bufflen <= 0) {
 	if (ftmp->bufflen < 0)
 	    perror("read");
 
-	close(infos->plist[plidx].fd);
 	handle_tcp_disconnect(plidx, infos);
 	return;
     }
 
+    /* Update stats */
+    ftmp->totalbytes += ftmp->bufflen;
+    ftmp->lastactivity = (long) time(NULL);
+
     if (ftmp->rsock == infos->plist[plidx].fd) {
+	/* We just read from the remote, so we have to send to the client */
 	infos->plist[P_IDX_C(F_IDX(plidx))].events = POLLOUT;
 	infos->plist[P_IDX_R(F_IDX(plidx))].events = 0;
 	ftmp->status = WAIT_WRITE_C;
     } else {
+	/* We just read from the client, so we have to send to the remote */
 	infos->plist[P_IDX_C(F_IDX(plidx))].events = 0;
 	infos->plist[P_IDX_R(F_IDX(plidx))].events = POLLOUT;
 	ftmp->status = WAIT_WRITE_R;
@@ -157,6 +171,15 @@ static void handle_tcp_read_data(int plidx, tracking_infos * infos)
 }
 
 
+/*
+ * Function: handle_tcp_write_data
+ *
+ * This function is called when a part (client or remote) has to send 
+ * datas that are waiting in the buffer.
+ * We write those datas to the concerned socket and if all the datas 
+ * have been send, we go back in "Listening" state (WAIT_READ_BOTH).
+ *
+ */
 static void handle_tcp_write_data(int plidx, tracking_infos * infos)
 {
     int tmp;
@@ -168,20 +191,23 @@ static void handle_tcp_write_data(int plidx, tracking_infos * infos)
 	tmp = write(ftmp->rsock, ftmp->buffer, ftmp->bufflen);
     }
 
+    /* Checks error or closed connection */
     if (tmp <= 0) {
 	if (tmp < 0)
 	    perror("write");
 
-	close(infos->plist[plidx].fd);
 	handle_tcp_disconnect(plidx, infos);
 	return;
     }
 
+
     if (tmp == ftmp->bufflen) {
+	/* All the datas have been sent */
 	infos->plist[P_IDX_C(F_IDX(plidx))].events = POLLIN;
 	infos->plist[P_IDX_R(F_IDX(plidx))].events = POLLIN;
 	ftmp->status = WAIT_READ_BOTH;
     } else {
+	/* There are remaining datas that we will send later */
 	memmove((char *) (ftmp->buffer), (char *) (ftmp->buffer + tmp),
 		ftmp->bufflen - tmp);
 	ftmp->bufflen -= tmp;
@@ -189,6 +215,17 @@ static void handle_tcp_write_data(int plidx, tracking_infos * infos)
 }
 
 
+/*
+ * Function: dispatch_tcp_loop
+ *
+ * This function checks, for each forward, if the next action to 
+ * perform (read datas, send to remote/client,...) is possible. 
+ * If yes, it calls the corresponding handling function.
+ *
+ * Moreover, it keeps an eye on new client connections 
+ * and user commands.
+ *
+ */
 int dispatch_tcp_loop(int lsock, tracking_infos * infos)
 {
     int plist_size = infos->maxconnection * 2 + 2, again = 1;
@@ -198,43 +235,43 @@ int dispatch_tcp_loop(int lsock, tracking_infos * infos)
     while (again) {
 	events = poll(infos->plist, plist_size, -1);
 	for (i = 0; i < plist_size && events > 0; ++i) {
-	    if (infos->plist[i].revents == 0)
+	    if (infos->plist[i].fd == -1 || infos->plist[i].revents == 0)
 		continue;
 
 	    --events;
 
-	    if (i == 0 && (infos->plist[i].revents & POLLIN)) {
+	    if (i == 0) {
 		/* New user command */
-		handle_user_command(&again, infos);
+		if (handle_user_command(infos))
+		    again = 0;
 	    } else if (i == 1) {
 		/* New client for us */
 		handle_new_tcp_client(lsock, infos);
-	    } else if (infos->plist[i].revents & POLLHUP) {
-		/* Someone has closed the connection */
-		handle_tcp_disconnect(i, infos);
-	    } else if (infos->plist[i].revents & POLLIN) {
-		/* We have data to receive */
-		handle_tcp_read_data(i, infos);
 	    } else if (infos->plist[i].revents & POLLOUT) {
 		/* We have data to send */
 		handle_tcp_write_data(i, infos);
+	    } else if (infos->plist[i].revents & POLLIN) {
+		/* We have data to receive */
+		handle_tcp_read_data(i, infos);
 	    }
 	}
 
 	/* Check flist */
 	if (infos->nbconnection < infos->maxconnection
 	    && infos->flist[infos->nbconnection] != NULL)
-	    rearrange_tcp_forward_list(infos);
+	    rearrange_forward_list(infos);
     }
 
+
+    /* User asked to quit; close/free everything */
     for (i = 0; i < infos->maxconnection; ++i) {
 	if (infos->flist[i] != NULL) {
 	    /* Close connections */
 	    close(infos->flist[i]->rsock);
 	    close(infos->flist[i]->csock);
 
-	    /* Free memory space */
-	    free_tcp_forward(infos->flist[i]);
+	    /* Clean memory */
+	    free_forward(infos->flist[i]);
 	}
     }
 
