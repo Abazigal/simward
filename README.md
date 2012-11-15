@@ -10,7 +10,7 @@ Data replacement will be available in a later release ...
 ## Usage
 * Launch the tool
 <pre>
-    Usage: simward [-t|-u] [-m <max>] 
+    Usage: simward [-t|-u] [-m &lt;max&gt;] 
           &lt;local_port&gt; &lt;remote_host&gt; &lt;remote_port&gt;
     
     Options:
